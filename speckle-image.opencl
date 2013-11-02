@@ -9,12 +9,9 @@ typedef struct Photon {
 } Photon;
 
 
-//#define NUM_PHOTONS 100
-
-
 typedef struct Exit_Photons {
     int num_exit_photons;
-    Photon p[100];
+    Photon p[1];
 } Exit_Photons;
 
 typedef struct CCD {
@@ -26,11 +23,16 @@ typedef struct CCD {
 } CCD;
 
 
+typedef struct Speckle_Image {
+    int num_x;
+    int num_y;
+    float *data;
+} Speckle_Image;
+
 // Return cos(alpha)+I*sin(alpha)
 float2 exp_alpha(float alpha);
 
 float2 exp_alpha(float alpha)
-
 {
     
     float cs,sn;
@@ -47,12 +49,10 @@ float2 exp_alpha(float alpha)
 //==============================================================
 // Main execution kernel.
 //-----------------------
-//__kernel void Speckle(__global float *speckle_grid,
-//                      __global struct Photon *p,
-//                      __global struct CCD *c)
+
 __kernel void Speckle(__global float *speckle_grid,
                       __global struct Exit_Photons *photons,
-                      __global struct CCD *c)
+                      __global struct CCD *ccd)
 
 {
     
@@ -70,18 +70,18 @@ __kernel void Speckle(__global float *speckle_grid,
         
         // If all pixels have been calculated, return.
         //
-        if (gid > (c->total_pix)) return;
+        if (gid > (ccd->total_pix)) return;
         
         // Calculate the x and y pixel this work item is responsible for.
         //
-        float start_x = c->x_center - (c->total_x_pixels/2)*c->dx;
-        float start_y = c->y_center - (c->total_y_pixels/2)*c->dy;
+        float start_x = ccd->x_center - (ccd->total_x_pixels/2)*ccd->dx;
+        float start_y = ccd->y_center - (ccd->total_y_pixels/2)*ccd->dy;
 
         // For each work item, we need to find the x and y-coordinate value of the
         // pixel that this work item is responsible for.
         //
-        float x_pixel = start_x + c->dx * (gid%c->total_x_pixels);
-        float y_pixel = start_y + c->dy*(gid * 1/c->total_y_pixels);
+        float x_pixel = start_x + ccd->dx * (gid%ccd->total_x_pixels);
+        float y_pixel = start_y + ccd->dy*(gid * 1/ccd->total_y_pixels);
 
         // Calculate the distance from the exit aperture of the medium to the pixel
         // on the camera.
@@ -102,7 +102,7 @@ __kernel void Speckle(__global float *speckle_grid,
         // Convert from complex number to intensity.
         //
         float intensity = rsqrt(complex.x*complex.x + complex.y*complex.y);
-        intensity = intensity*intensity;
+        //intensity = intensity*intensity;
 
 
 

@@ -3,19 +3,18 @@
 //
 // Abstract:   CCD Grid simulation under GPU control.
 ////////////////////////////////////////////////////////////////////////////////
-#include <assert.h>
-#include <math.h>
-#include <time.h>
-#include <fcntl.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdlib.h>
-#include <string.h>
-#include <math.h>
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/stat.h>
+#include <iostream>
+#include <vector>
+#include <algorithm>
+
+//The OpenCL C++ bindings, with exceptions
+#define __CL_ENABLE_EXCEPTIONS
+
+#ifdef __APPLE__ 
 #include <OpenCL/opencl.h>
+#else
+#include <CL/cl.h>
+#endif
 ////////////////////////////////////////////////////////////////////////////////
 
 // Use a static data size for simplicity
@@ -61,8 +60,25 @@ typedef struct CCD {
 
 
 
-int main(int argc, char** argv)
+int main()
 {
+
+try {
+    /***************     OpenCL Initialisation      ***************/
+    //Open a context to run the openCL kernel in
+    cl::Context context(CL_DEVICE_TYPE_GPU);
+
+    //Gather all the kernel sources for the OpenCL program
+    cl::Program::Sources source;
+    source.push_back(std::make_pair(kernelSrc, strlen(kernelSrc)));
+  
+    //Make an OpenCL program
+    cl::Program program(context, source);
+  
+    //Get all the available devices in the context
+    std::vector<cl::Device> devices 
+      = context.getInfo<CL_CONTEXT_DEVICES>();
+/*
     cl_int err;                         // error code returned from api calls
     
     float results[MAX_WORK_ITEMS];    // results returned from device
@@ -76,7 +92,9 @@ int main(int argc, char** argv)
     cl_command_queue commands;          // compute command queue
     cl_program program;                 // compute program
     cl_kernel kernel;                   // compute kernel
-    
+
+    cl_platform_id platform_id;	     
+
     cl_mem CCD_mem;                       // device memory used for the input array
     cl_mem photon_mem;                      // device memory used for the output array
     cl_mem speckle_grid;                // device memory used for the speckle formation
@@ -92,9 +110,23 @@ int main(int argc, char** argv)
     for (i = 0; i < MAX_WORK_ITEMS; i++)
         results[i] = 0;
     
+    cl_uint numplats;
+    cl_int status;
+    status = clGetPlatformIDs(1, &platform_id, &numplats);
+    if (status != CL_SUCCESS)
+    {
+	printf("Error: no platform id's\n");
+	return EXIT_FAILURE;
+    }
+    if (numplats == 0)
+    {
+	printf("number of platforms = 0\n");
+	return EXIT_FAILURE;
+    }
+
     // Connect to a compute device
     //
-    int gpu = 1;
+    int gpu = 0;
     err = clGetDeviceIDs(NULL, gpu ? CL_DEVICE_TYPE_GPU : CL_DEVICE_TYPE_CPU, 1, &device_id, NULL);
     if (err != CL_SUCCESS)
     {
@@ -335,7 +367,18 @@ int main(int argc, char** argv)
     for (i = 0; i < EXEC_KERNEL_NUM_TIMES; i++)
         clReleaseEvent(event[i]);
     
+    
+    */
+    
+    std::cout << "Finished!\n";
     return 0;
+  }
+  catch (cl::Error& err)
+    {
+      std::cerr << "An OpenCL error occured, " << err.what()
+		<< "\nError num of " << err.err() << "\n";
+      return -1;
+    }
 }
 
 
@@ -345,8 +388,8 @@ char * load_program_source(const char *filename)
     FILE *fp;
     char *source;
     fp = fopen(filename, "r");
-    assert (fp != NULL);
-    stat(filename, &statbuf);
+    //assert (fp != NULL);
+    //stat(filename, &statbuf);
     source = (char *)malloc(statbuf.st_size + 1);
     fread(source, statbuf.st_size, 1, fp);
     source[statbuf.st_size] = '\0';
