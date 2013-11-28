@@ -5,6 +5,13 @@
 #include <algorithm>
 #include <string>
 
+#include <cstdlib>
+#include <sys/stat.h>
+#include <boost/filesystem.hpp>
+using namespace boost::filesystem;
+#include <algorithm>
+#include <ctime>
+
 using namespace std;
 
 //The OpenCL C++ bindings, with exceptions
@@ -12,16 +19,19 @@ using namespace std;
 #include <CL/cl.hpp>
 
 
+const std::string separator = "---------------------------------------------------\n";
+
+
 // Use a static data size for simplicity
 //
-#define X_PIXELS 128
-#define Y_PIXELS 16
+#define X_PIXELS 64
+#define Y_PIXELS 64
 // We want the number of threads to equal the number of pixls in the CCD.
 #define MAX_WORK_ITEMS (X_PIXELS * Y_PIXELS)
 #define NUM_EVENTS 1    // Number of times the kernel is executed.  Need to launch same kernel multiple times
 // due to timeout of watchdog timer.
 
-#define NUM_PHOTONS 30000
+#define NUM_PHOTONS 10000
 
 
 // Structs that hold data that is passed to the GPU.
@@ -60,6 +70,22 @@ typedef struct Speckle_Image {
 /// Helper function to print kernel build error.
 /// ------------------------------------------------
 const char* oclErrorString(cl_int error);
+
+
+/// Responsible for loading data from files in an informative and structured way.
+/// -----------------------------------------------------------------------------
+/// Holds the filename and timestamp of the file.
+/// Used for sorting and loading data.
+struct filename_tstamp
+{
+    std::string filename;
+    size_t tstamp;
+};
+bool SortFunction (struct filename_tstamp a, struct filename_tstamp b) { return (a.tstamp < b.tstamp); }
+void printFiles(std::vector<filename_tstamp> files);
+int  Get_num_detected_photons(std::string &filename);
+void Load_detected_photons_from_file(void);
+
 
 
 int main()
@@ -186,12 +212,14 @@ int main()
     for (cnt = 0; cnt < NUM_PHOTONS; cnt++)
     {
         //photons->p[cnt] = (Photon *)malloc(sizeof(Photon));
-        photons->p[cnt].x = rand();
-        photons->p[cnt].y = rand();
-        photons->p[cnt].z = 1.0f;
-        photons->p[cnt].weight = 1.0f;
+        photons->p[cnt].x = ((float) rand() / RAND_MAX);
+        photons->p[cnt].y = ((float) rand() / RAND_MAX);
+        //photons->p[cnt].x = 0.5f;
+        //photons->p[cnt].y = 0.5f;
+        photons->p[cnt].z = 5.50f;
+        photons->p[cnt].weight = ((float) rand() / RAND_MAX);
         photons->p[cnt].wavelength = 532e-9f;
-        photons->p[cnt].optical_path_length = rand()+rand();
+        photons->p[cnt].optical_path_length = ((float) rand() / RAND_MAX)+1;
     }
 
     // Define the attributes of the CCD.
@@ -204,7 +232,7 @@ int main()
     camera->total_pix = X_PIXELS * Y_PIXELS;
     camera->x_center = 0.5f;
     camera->y_center = 0.5f;
-    camera->z = 1.0f;
+    camera->z = 100.0f;
 
 
 
@@ -267,7 +295,7 @@ int main()
     /// Run the kernel on the device.
     /// ------------------------------------------------------------------------
     cout << "Executing kernel...\n";
-    err = queue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(128,16), cl::NDRange(16,16), NULL, &event);
+    err = queue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(64,64), cl::NDRange(1,1), NULL, &event);
     queue.finish();
 
 
@@ -313,6 +341,100 @@ int main()
 
     return 0;
 
+}
+
+
+/// Responsible for loading in data (detected photons) from the AO simulation results.
+///
+void Load_detected_photons_from_file(void)
+{
+    path p_exit_data = "../AO-KWave-MCBoost/Data";
+    path p_speckle_data = "../AO-KWave-MCBoost/Data/Speckles";
+    if (is_directory(p_exit_data))
+    {
+        cout << "Data directory found: " << p_exit_data << '\n';
+
+        /// Check if we have a directory to store the generated speckle data.
+        if (is_directory(p_speckle_data))
+        {
+            cout << "Storing speckle data: " << p_speckle_data << '\n';
+        }
+        else
+        {
+            cout << "!!!ERROR: Directory for storing speckle data to location [" << p_speckle_data << "] does not exist.\n";
+            exit(1);
+        }
+
+    }
+    else
+    {
+        cout << "!!!ERROR: Data directory does not exist.  Given the following path: " << p_exit_data << '\n';
+        exit(1);
+    }
+
+    /// Get the timestamps of all the files and add them to the vector for sorting later.
+    struct stat st;
+    std::vector<filename_tstamp> files;
+    for (directory_iterator itr(p_exit_data); itr!=directory_iterator(); ++itr)
+    {
+        std::string f = itr->path().string(); // + itr->path().filename().string();
+        if (stat(f.c_str(), &st) != 0)
+        {
+            cout << "!!!ERROR: Unable to read time stamp of " << f << '\n';
+            cout << "st.st_mtime = " << st.st_mtime << '\n';
+            exit(1);
+        }
+
+        /// Ignore the seeds file used for generating exit photons (i.e. through exit aperture) and directories.
+        if ((itr->path().filename().string() != "seeds_for_exit.dat") && is_regular_file(itr->path()))
+        {
+            filename_tstamp temp;
+            temp.filename = f;
+            temp.tstamp = st.st_mtime;
+            files.push_back(temp);
+        }
+    }
+
+    /// Sort the files based on their timestamp.
+    std::sort (files.begin(), files.end(), SortFunction);
+
+    /// The number of exit-data files to read in and operate on.
+    const int NUM_FILES = files.size();
+    int num_detected_photons = Get_num_detected_photons((files.at(0)).filename);
+    cout << separator;
+    cout << "Processing " << NUM_FILES << " exit data files.\n";
+    cout << "Detected photons: " << num_detected_photons << '\n';
+    cout << separator;
+
+
+}
+
+int Get_num_detected_photons(std::string &filename)
+{
+
+    int i = 0;
+    std::string line;
+
+
+    // Input stream.
+    std::ifstream temp_stream;
+    temp_stream.open(filename.c_str());
+
+    do
+    {
+
+        getline(temp_stream,line);
+        if (temp_stream.fail())
+        {
+            break;
+        }
+        ++i;
+    }
+    while (temp_stream.good());
+
+    temp_stream.close();
+
+    return i;
 }
 
 // Helper function to get error string

@@ -11,7 +11,7 @@ typedef struct Photon {
 
 typedef struct Exit_Photons {
     int num_exit_photons;
-    Photon p[1];
+    Photon p[30];
 } Exit_Photons;
 
 typedef struct CCD {

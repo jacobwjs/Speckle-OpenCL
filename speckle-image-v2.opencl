@@ -10,7 +10,7 @@ typedef struct Photon {
 
 typedef struct Exit_Photons {
     int num_exit_photons;
-    Photon p[30000];
+    Photon p[10000];
 } Exit_Photons;
 
 
@@ -26,7 +26,7 @@ typedef struct CCD {
 typedef struct Speckle_Image {
     int num_x;
     int num_y;
-    float data[128][16];
+    float data[64][64];
 } Speckle_Image;
 
 
@@ -62,6 +62,10 @@ __kernel void Speckle(__global struct Speckle_Image *speckle_image,
     float x_pixel = 0.0f;
     float y_pixel = 0.0f;
 
+    // Holds the exit weight of the photon bundle upon leaving the medium.
+    //
+    float weight = 0.0f;
+
     // The final optical path length (medium + distance to CCD).
     //
     float L = 0.0f;
@@ -70,10 +74,14 @@ __kernel void Speckle(__global struct Speckle_Image *speckle_image,
     // each photon.
     float intensity = 0.0f;
 
-    for (int n = 0; n < 30000; n++)
+    for (int n = 0; n < photons->num_exit_photons; n++)
     {
         int i = get_global_id(0);
         int j = get_global_id(1);
+
+        // Assign the exit weight of this photon.
+        //
+        //weight = photons
 
         // Calculate the x,y location in cartesian space of this pixel.
         //
@@ -85,18 +93,21 @@ __kernel void Speckle(__global struct Speckle_Image *speckle_image,
         // on the camera.
         //
         float dist_to_pixel = rsqrt((ccd->z*ccd->z) +
-                                    (x_pixel - photons->p[i].x) * (x_pixel - photons->p[i].x) +
-                                    (y_pixel - photons->p[i].y) * (y_pixel - photons->p[i].y));
+                                    (x_pixel - photons->p[n].x) * (x_pixel - photons->p[n].x) +
+                                    (y_pixel - photons->p[n].y) * (y_pixel - photons->p[n].y));
+
+
+
 
         // Finish the calculation of the total optical path length to the CCD pixel.
         // NOTE: Because the final propagation to the medium is in air, we assume
         //       a refractive index of 1.0.
-        L = photons->p[i].optical_path_length + (dist_to_pixel*1.0);
+        L = photons->p[n].optical_path_length + (dist_to_pixel*1.0);
 
 
         // The complex field calculation.
         //
-        float2 temp = (1/dist_to_pixel) * rsqrt(photons->p[i].weight) * exp_alpha((float)(-1*2*L*Pi*1/(photons->p[i].wavelength)));
+        float2 temp = (1/dist_to_pixel) * rsqrt(photons->p[n].weight) * exp_alpha((float)(-1*2*L*Pi*1/(photons->p[n].wavelength)));
         float2 complex = temp;
 
 
@@ -109,8 +120,7 @@ __kernel void Speckle(__global struct Speckle_Image *speckle_image,
         //
         speckle_image->data[i][j] += intensity;
 
-        //speckle_image->data[i][j] = y_pixel;
-        //speckle_image->data[i][j] += photons->p[n].optical_path_length;
+        //speckle_image->data[i][j] = dist_to_pixel;
     }
 
 
