@@ -1,1 +1,1 @@
-g++ -v -m64 -std=c++0x -L /usr/lib/libOpenCL.so -I /opt/AMDAPP/include main.cpp -lOpenCL -lboost_filesystem
+g++ -v -m64 -std=c++0x -L /usr/lib/libOpenCL.so -I /opt/AMDAPP/include main.cpp exit_data.cpp -lOpenCL -lboost_filesystem

@@ -14,6 +14,8 @@ using namespace boost::filesystem;
 
 using namespace std;
 
+#include "exit_data.h"
+
 //The OpenCL C++ bindings, with exceptions
 #define __CL_ENABLE_EXCEPTIONS
 #include <CL/cl.hpp>
@@ -85,6 +87,7 @@ bool SortFunction (struct filename_tstamp a, struct filename_tstamp b) { return 
 void printFiles(std::vector<filename_tstamp> files);
 int  Get_num_detected_photons(std::string &filename);
 void Load_detected_photons_from_file(void);
+ExitData *exit_data;
 
 
 
@@ -185,6 +188,9 @@ int main()
     }
 
 
+    /// Read in the data from the AO simulation.
+    /// ------------------------------------------------------------------------
+    Load_detected_photons_from_file();
 
     /// Create CPU memory.
     /// ------------------------------------------------------------------------
@@ -405,6 +411,10 @@ void Load_detected_photons_from_file(void)
     cout << "Processing " << NUM_FILES << " exit data files.\n";
     cout << "Detected photons: " << num_detected_photons << '\n';
     cout << separator;
+
+    /// Create the ExitData object that will hold all of the detected photons and their attributes.
+    /// This object will fill the structs that are handed off to the GPU.
+    exit_data = new ExitData(num_detected_photons);
 
 
 }
