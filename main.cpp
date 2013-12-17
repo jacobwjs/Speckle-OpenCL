@@ -4,7 +4,7 @@
 #include <vector>
 #include <algorithm>
 #include <string>
-
+#include <iostream>
 #include <cstdlib>
 #include <sys/stat.h>
 #include <boost/filesystem.hpp>
@@ -21,29 +21,58 @@ using namespace std;
 #include <CL/cl.hpp>
 
 
+
+
+#define DEBUG
+#undef DEBUG
+
 const std::string separator = "---------------------------------------------------\n";
 
 
-// Use a static data size for simplicity
-//
-#define X_PIXELS 64
-#define Y_PIXELS 64
+//#if defined (cl_khr_fp64)
+//    #pragma OPENCL EXTENSION cl_khr_fp64 : enable
+//#elif defined(cl_amd_fp64)
+//    #pragma OPENCL EXTENSION cl_amd_fp64 : enable
+//#else
+//    #define NO_DOUBLE_SUPPORT 1
+//#endif
+
+
+
+
+
+
 // We want the number of threads to equal the number of pixls in the CCD.
 #define MAX_WORK_ITEMS (X_PIXELS * Y_PIXELS)
 #define NUM_EVENTS 1    // Number of times the kernel is executed.  Need to launch same kernel multiple times
 // due to timeout of watchdog timer.
 
-#define NUM_PHOTONS 10000
+#define NUM_PHOTONS 20000
 
+
+
+//#define DOUBLE_SUPPORT_AVAILABLE
+
+#if defined(DOUBLE_SUPPORT_AVAILABLE)
+// double
+typedef double real_t;
+#define PI 3.14159265358979323846
+#else
+// float
+typedef float real_t;
+#define PI 3.14159265359f
+#endif
 
 // Structs that hold data that is passed to the GPU.
 //
 typedef struct Photon {
-    float dirx, diry, dirz;     // direction of the photon.
-    float x, y, z;              // exit coordinates of the photon.
-    float optical_path_length;  // the optical path length.
-    float weight;               // it's exit weight.
-    float wavelength;           // The 'wavelength' of the photon.
+    real_t dirx, diry, dirz;        // direction of the photon.
+    real_t x, y, z;                 // exit coordinates of the photon.
+    real_t displaced_OPL;           // the optical path length.
+    real_t refraction_OPL;
+    real_t combined_OPL;
+    real_t weight;                  // it's exit weight.
+    real_t wavelength;              // The 'wavelength' of the photon.
 } Photon;
 
 
@@ -53,19 +82,25 @@ typedef struct Exit_Photons {
 } Exit_Photons;
 
 
+// Define the attributes of the CCD camera as well as its location.
+//
+#define X_PIXELS 64
+#define Y_PIXELS 64
 typedef struct CCD {
-    float x_center, y_center, z;  // location of the CCD in 3-D space.
-    float dx; // pixel size (x-axis)
-    float dy; // pixel size (y-axis)
+    real_t x_center, y_center, z;  // location of the CCD in 3-D space.
+    real_t dx; // pixel size (x-axis)
+    real_t dy; // pixel size (y-axis)
     int total_x_pixels, total_y_pixels;     // number of pixels in the x and y-axis.
     int total_pix;
 
 } CCD;
 
+
+
 typedef struct Speckle_Image {
     int num_x;
     int num_y;
-    float data[X_PIXELS][Y_PIXELS];
+    real_t data[X_PIXELS][Y_PIXELS];
 } Speckle_Image;
 
 
@@ -87,12 +122,14 @@ bool SortFunction (struct filename_tstamp a, struct filename_tstamp b) { return 
 void printFiles(std::vector<filename_tstamp> files);
 int  Get_num_detected_photons(std::string &filename);
 void Load_detected_photons_from_file(void);
-ExitData *exit_data;
+std::vector<ExitData * > exit_data_all_timesteps;
 
 
 
 int main()
 {
+    //if (NO_DOUBLE_SUPPORT)  cout << "Double precision not supported\n";
+
     /// Get the platforms and devices available on the system.
     /// ------------------------------------------------------------------------
     //get all platforms (drivers)
@@ -144,7 +181,8 @@ int main()
     /// ------------------------------------------------------------------------
     cl::Program program;
     //std::string     filename = "speckle-image.opencl";
-    std::string     filename = "speckle-image-v2.opencl";
+    //std::string     filename = "speckle-image-v2.opencl";
+    std::string     filename = "testing.opencl";
     std::ifstream   kernel_source_file(filename);
     std::string     kernel_prog(std::istreambuf_iterator<char>(kernel_source_file),
                             (std::istreambuf_iterator<char>()));
@@ -198,47 +236,83 @@ int main()
     Speckle_Image *speckle_image = (Speckle_Image *)malloc(sizeof(Speckle_Image));
     speckle_image->num_x = X_PIXELS;
     speckle_image->num_y = Y_PIXELS;
-    //speckle_image->data = (float *)malloc(sizeof(float)*X_PIXELS*Y_PIXELS);
-    //memset(speckle_image->data, 0.0f, sizeof(float)*X_PIXELS*Y_PIXELS);
+    //speckle_image->data = (real_t *)malloc(sizeof(real_t)*X_PIXELS*Y_PIXELS);
+    //memset(speckle_image->data, 0.0f, sizeof(real_t)*X_PIXELS*Y_PIXELS);
     cout << "\n\nData before kernel execution\n\n";
     for (size_t i = 0; i < X_PIXELS; i++)
     {
         for (size_t j = 0; j < Y_PIXELS; j++)
         {
             speckle_image->data[i][j] = 0.0f;
+#ifdef DEBUG
             cout << speckle_image->data[i][j] << ", ";
+#endif
         }
+#ifdef DEBUG
         cout << "\n";
+#endif
     }
     // Create exit photons struct that is handed off to the kernel.
     //
     Exit_Photons *photons = (Exit_Photons *)malloc(sizeof(Exit_Photons));
     photons->num_exit_photons = NUM_PHOTONS;
     int cnt;
-    for (cnt = 0; cnt < NUM_PHOTONS; cnt++)
+
+    /// Holds the values for the exit data during assignment.
+    //
+    real_t weight            = 0.0f;
+    real_t displaced_OPL     = 0.0f;
+    real_t refraction_OPL    = 0.0f;
+    real_t combined_OPL      = 0.0f;
+    real_t exit_location_x   = 0.0f;
+    real_t exit_location_y   = 0.0f;
+    real_t exit_location_z   = 0.0f;
+
+
+    cout << "\nLoading " << NUM_PHOTONS << " detected photons for speckle pattern formation\n";
+    /// For each time step of recorded data from the AO sim
+    //for (size_t time_step = 0; time_step < exit_data_all_timesteps.size(); time_step++)
+    for (size_t time_step = 0; time_step < 1; time_step++)
     {
-        //photons->p[cnt] = (Photon *)malloc(sizeof(Photon));
-        photons->p[cnt].x = ((float) rand() / RAND_MAX);
-        photons->p[cnt].y = ((float) rand() / RAND_MAX);
-        //photons->p[cnt].x = 0.5f;
-        //photons->p[cnt].y = 0.5f;
-        photons->p[cnt].z = 5.50f;
-        photons->p[cnt].weight = ((float) rand() / RAND_MAX);
-        photons->p[cnt].wavelength = 532e-9f;
-        photons->p[cnt].optical_path_length = ((float) rand() / RAND_MAX)+1;
+        /// Loop through the exit data and assign 'NUM_PHOTONS' of detected photons
+        /// the struct that will be handed off to the OpenCL kernel.
+        for (cnt = 0; cnt < NUM_PHOTONS; cnt++)
+        {
+
+            // Transfer data from the 'ExitData' object to the structs that OpenCL uses.
+            //
+            weight 				= exit_data_all_timesteps.at(time_step)->values[cnt][0];
+            displaced_OPL 		= exit_data_all_timesteps.at(time_step)->values[cnt][1];
+            refraction_OPL      = exit_data_all_timesteps.at(time_step)->values[cnt][2];
+            combined_OPL		= exit_data_all_timesteps.at(time_step)->values[cnt][3];
+            exit_location_x 	= exit_data_all_timesteps.at(time_step)->values[cnt][4];
+            exit_location_y		= exit_data_all_timesteps.at(time_step)->values[cnt][5];
+            //exit_location_z		= exit_data_all_timesteps.at(time_step)->values[cnt][6];
+
+
+            photons->p[cnt].x = exit_location_x;
+            photons->p[cnt].y = exit_location_y;
+            //photons->p[cnt].z = exit_location_z;
+            photons->p[cnt].displaced_OPL   = displaced_OPL;
+            photons->p[cnt].refraction_OPL  = refraction_OPL;
+            photons->p[cnt].combined_OPL    = combined_OPL;
+            photons->p[cnt].weight = weight;
+            photons->p[cnt].wavelength = 532e-9f;
+        }
     }
+
 
     // Define the attributes of the CCD.
     //
     CCD *camera = (CCD *)malloc(sizeof(CCD));
-    camera->dx = 6.00e-5;
-    camera->dy = camera->dx;
+    //camera->dx = PIXEL_SIZE;
+    //camera->dy = PIXEL_SIZE;
     camera->total_x_pixels = X_PIXELS;
     camera->total_y_pixels = Y_PIXELS;
     camera->total_pix = X_PIXELS * Y_PIXELS;
-    camera->x_center = 0.5f;
-    camera->y_center = 0.5f;
-    camera->z = 100.0f;
+//    camera->x_center = X_CENTER;
+//    camera->y_center = Y_CENTER;
+//    camera->z = DISTANCE_FROM_MEDIUM;
 
 
 
@@ -271,12 +345,13 @@ int main()
         std::cerr << "ERROR: " << er.what() << er.err() << "\n";
     }
 
-    err = queue.enqueueWriteBuffer(cl_photons, CL_TRUE, 0, sizeof(Exit_Photons),
+    err = queue.enqueueWriteBuffer(cl_speckle_image, CL_TRUE, 0, sizeof(Speckle_Image),
+                                   (void *)speckle_image, 0, &event);
+    err |= queue.enqueueWriteBuffer(cl_photons, CL_TRUE, 0, sizeof(Exit_Photons),
                                    (void *)photons, 0, &event);
     err |= queue.enqueueWriteBuffer(cl_CCD, CL_TRUE, 0, sizeof(CCD),
                                    (void *)camera, 0, &event);
-    err |= queue.enqueueWriteBuffer(cl_speckle_image, CL_TRUE, 0, sizeof(Speckle_Image),
-                                   (void *)speckle_image, 0, &event);
+
     if (err != CL_SUCCESS)
     {
         std::cerr << "ERROR: Failed to enqueue data\n";
@@ -301,7 +376,7 @@ int main()
     /// Run the kernel on the device.
     /// ------------------------------------------------------------------------
     cout << "Executing kernel...\n";
-    err = queue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(64,64), cl::NDRange(1,1), NULL, &event);
+    err = queue.enqueueNDRangeKernel(kernel, cl::NDRange(), cl::NDRange(64,64), cl::NDRange(1,1), NULL, &event);
     queue.finish();
 
 
@@ -316,7 +391,7 @@ int main()
     /// Write data out to file for imaging.
     /// ------------------------------------------------------------------------
     std::ofstream speckle_data_stream;
-    std::string output_filename = "speckle_test_gpu.dat";
+    std::string output_filename = "Testing-Speckles/speckle_gpu.dat";
     speckle_data_stream.open(output_filename.c_str());
     if (!speckle_data_stream)
     {
@@ -326,7 +401,7 @@ int main()
     // Set the precision and width of the data written to file.
     //speckle_data_stream.width(10);
     //speckle_data_stream.setf(std::ios::showpoint | std::ios::fixed);
-    speckle_data_stream.precision(5);
+    speckle_data_stream.precision(9);
 
     cout << "\n\nData after kernel execution\n\n";
     for (size_t i = 0; i < X_PIXELS; i++)
@@ -334,12 +409,15 @@ int main()
         for (size_t j = 0; j < Y_PIXELS; j++)
         {
             speckle_data_stream << speckle_image->data[i][j] << "\t";
+#ifdef DEBUG
             cout << speckle_image->data[i][j] << ", ";
+#endif
         }
         speckle_data_stream << "\n";
         speckle_data_stream.flush();
-
+#ifdef DEBUG
         cout << "\n";
+#endif
     }
     speckle_data_stream.flush();
 
@@ -354,11 +432,11 @@ int main()
 ///
 void Load_detected_photons_from_file(void)
 {
-    path p_exit_data = "../AO-KWave-MCBoost/Data";
-    path p_speckle_data = "../AO-KWave-MCBoost/Data/Speckles";
+    path p_exit_data = "Data";
+    path p_speckle_data = "Testing-Speckles";
     if (is_directory(p_exit_data))
     {
-        cout << "Data directory found: " << p_exit_data << '\n';
+        cout << "\nData directory found: " << p_exit_data << '\n';
 
         /// Check if we have a directory to store the generated speckle data.
         if (is_directory(p_speckle_data))
@@ -402,7 +480,7 @@ void Load_detected_photons_from_file(void)
     }
 
     /// Sort the files based on their timestamp.
-    std::sort (files.begin(), files.end(), SortFunction);
+    //std::sort (files.begin(), files.end(), SortFunction);
 
     /// The number of exit-data files to read in and operate on.
     const int NUM_FILES = files.size();
@@ -414,7 +492,13 @@ void Load_detected_photons_from_file(void)
 
     /// Create the ExitData object that will hold all of the detected photons and their attributes.
     /// This object will fill the structs that are handed off to the GPU.
-    exit_data = new ExitData(num_detected_photons);
+    //exit_data = new ExitData(num_detected_photons);
+    for (size_t i = 0; i < NUM_FILES; i++)
+    {
+        exit_data_all_timesteps.push_back(new ExitData(Get_num_detected_photons((files.at(i)).filename)));
+        (exit_data_all_timesteps.at(i))->loadExitData(files.at(i).filename);
+    }
+
 
 
 }

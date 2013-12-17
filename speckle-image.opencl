@@ -38,7 +38,7 @@ float2 exp_alpha(float alpha)
     float cs,sn;
     
     sn = sincos(alpha,&cs);
-    cs = native_cos(alpha);
+    //cs = native_cos(alpha);
     
     return (float2)(cs,sn);
     
