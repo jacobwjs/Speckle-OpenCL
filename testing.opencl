@@ -50,16 +50,16 @@ typedef struct Photon {
 
 typedef struct Exit_Photons {
     int num_exit_photons;
-    Photon p[20000];
+    Photon p[25000];
 } Exit_Photons;
 
 
 // Define the attributes of the CCD camera as well as its location.
 //
-#define PIXEL_SIZE 6.25e-6f
+#define PIXEL_SIZE 6e-6f
 #define X_CENTER 0.02250f
 #define Y_CENTER 0.01145f
-#define DISTANCE_FROM_MEDIUM 0.5f
+#define DISTANCE_FROM_MEDIUM 0.45f
 typedef struct CCD {
     real_t x_center, y_center, z;  // location of the CCD in 3-D space.
     real_t dx; // pixel size (x-axis)
@@ -72,12 +72,17 @@ typedef struct CCD {
 
 
 
-
 typedef struct Speckle_Image {
     int num_x;
     int num_y;
-    real_t data[64][64];
+    real_t data[1024][1024];
+    real2_t temp_data[1024][1024];
 } Speckle_Image;
+//typedef struct Speckle_Image {
+//    int num_x;
+//    int num_y;
+//    real_t data[64][64];
+//} Speckle_Image;
 
 
 real2_t exp_alpha(real_t alpha);
@@ -98,14 +103,14 @@ __kernel void Speckle(__global struct Speckle_Image *speckle_image,
 {
 
     //const int DIMS = 128;
-    real2_t TEMP[64][64];
+//    real2_t TEMP[64][64];
     int m;
     int n;
-    for (m = 0; m < 64; m++)
+    for (m = 0; m < 1024; m++)
     {
-        for ( n = 0; n < 64; n++)
+        for ( n = 0; n < 1024; n++)
         {
-            TEMP[m][n] = (real2_t)(0,0);
+            speckle_image->temp_data[m][n] = (real2_t)(0,0);
         }
     }
 
@@ -146,7 +151,7 @@ __kernel void Speckle(__global struct Speckle_Image *speckle_image,
 
 
     //for (int n = 0; n < photons->num_exit_photons; n++)
-    for (int n = 0; n < 200; n++)
+    for (int n = 0; n < 25000; n++)
     {
 
 
@@ -183,7 +188,7 @@ __kernel void Speckle(__global struct Speckle_Image *speckle_image,
         intensity = sqrt((complex.x*complex.x + complex.y*complex.y));
 
 
-        TEMP[i][j] += temp;
+        speckle_image->temp_data[i][j] += temp;
 
         // Update the pixel with the addition of the new intensity contribution.
         //
@@ -193,9 +198,9 @@ __kernel void Speckle(__global struct Speckle_Image *speckle_image,
 
     }
 
-    barrier(CLK_GLOBAL_MEM_FENCE);
+    //barrier(CLK_GLOBAL_MEM_FENCE);
 
-    real2_t c = TEMP[i][j];
+    real2_t c = speckle_image->temp_data[i][j];
     speckle_image->data[i][j] = fabs(pow(sqrt(c.x*c.x + c.y*c.y),2));
 };
 

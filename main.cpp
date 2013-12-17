@@ -43,11 +43,11 @@ const std::string separator = "-------------------------------------------------
 
 
 // We want the number of threads to equal the number of pixls in the CCD.
-#define MAX_WORK_ITEMS (X_PIXELS * Y_PIXELS)
-#define NUM_EVENTS 1    // Number of times the kernel is executed.  Need to launch same kernel multiple times
+//#define MAX_WORK_ITEMS (X_PIXELS * Y_PIXELS)
+//#define NUM_EVENTS 1    // Number of times the kernel is executed.  Need to launch same kernel multiple times
 // due to timeout of watchdog timer.
 
-#define NUM_PHOTONS 20000
+#define NUM_PHOTONS 25000
 
 
 
@@ -56,10 +56,12 @@ const std::string separator = "-------------------------------------------------
 #if defined(DOUBLE_SUPPORT_AVAILABLE)
 // double
 typedef double real_t;
+typedef cl_double2 real2_t;
 #define PI 3.14159265358979323846
 #else
 // float
 typedef float real_t;
+typedef cl_float2 real2_t;
 #define PI 3.14159265359f
 #endif
 
@@ -84,8 +86,8 @@ typedef struct Exit_Photons {
 
 // Define the attributes of the CCD camera as well as its location.
 //
-#define X_PIXELS 64
-#define Y_PIXELS 64
+#define X_PIXELS 1024
+#define Y_PIXELS 1024
 typedef struct CCD {
     real_t x_center, y_center, z;  // location of the CCD in 3-D space.
     real_t dx; // pixel size (x-axis)
@@ -101,6 +103,7 @@ typedef struct Speckle_Image {
     int num_x;
     int num_y;
     real_t data[X_PIXELS][Y_PIXELS];
+    real2_t temp_data[X_PIXELS][Y_PIXELS];
 } Speckle_Image;
 
 
@@ -244,6 +247,7 @@ int main()
         for (size_t j = 0; j < Y_PIXELS; j++)
         {
             speckle_image->data[i][j] = 0.0f;
+            //speckle_image->temp_data[i][j] = {0.0f, 0.0f};
 #ifdef DEBUG
             cout << speckle_image->data[i][j] << ", ";
 #endif
@@ -323,6 +327,8 @@ int main()
     cl::Buffer cl_photons;         // device memory used for the detected photons
     cl::Buffer cl_speckle_image;   // device memory used for the speckle formation
 
+
+
     cl_CCD           = cl::Buffer(context, CL_MEM_READ_ONLY, sizeof(CCD), NULL, &err);
     cl_photons       = cl::Buffer(context, CL_MEM_READ_ONLY, sizeof(Exit_Photons), NULL, &err);
     cl_speckle_image = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(Speckle_Image), NULL, &err);
@@ -352,6 +358,7 @@ int main()
     err |= queue.enqueueWriteBuffer(cl_CCD, CL_TRUE, 0, sizeof(CCD),
                                    (void *)camera, 0, &event);
 
+
     if (err != CL_SUCCESS)
     {
         std::cerr << "ERROR: Failed to enqueue data\n";
@@ -376,7 +383,7 @@ int main()
     /// Run the kernel on the device.
     /// ------------------------------------------------------------------------
     cout << "Executing kernel...\n";
-    err = queue.enqueueNDRangeKernel(kernel, cl::NDRange(), cl::NDRange(64,64), cl::NDRange(1,1), NULL, &event);
+    err = queue.enqueueNDRangeKernel(kernel, cl::NDRange(), cl::NDRange(1024,1024), cl::NDRange(16,16), NULL, &event);
     queue.finish();
 
 
@@ -401,7 +408,7 @@ int main()
     // Set the precision and width of the data written to file.
     //speckle_data_stream.width(10);
     //speckle_data_stream.setf(std::ios::showpoint | std::ios::fixed);
-    speckle_data_stream.precision(9);
+    speckle_data_stream.precision(6);
 
     cout << "\n\nData after kernel execution\n\n";
     for (size_t i = 0; i < X_PIXELS; i++)
