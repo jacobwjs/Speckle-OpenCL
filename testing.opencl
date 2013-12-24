@@ -13,7 +13,6 @@
 //#endif // CONFIG_USE_DOUBLE
 
 #if defined(DOUBLE_SUPPORT_AVAILABLE)
-
 // double
 typedef double real_t;
 typedef double2 real2_t;
@@ -31,11 +30,14 @@ typedef float4 real4_t;
 typedef float8 real8_t;
 typedef float16 real16_t;
 #define PI 3.14159265359f
-
 #endif
 
 
+/// Wavelength for the interference pattern calculation.
 #define WAVELENGTH 532e-9
+
+
+
 // Structs that hold data that is passed to the GPU.
 //
 typedef struct Photon {
@@ -50,6 +52,7 @@ typedef struct Photon {
 
 typedef struct Exit_Photons {
     int num_exit_photons;
+    //Photon p[320000];
     Photon p[25000];
 } Exit_Photons;
 
@@ -75,8 +78,8 @@ typedef struct CCD {
 typedef struct Speckle_Image {
     int num_x;
     int num_y;
-    real_t data[1024][1024];
-    real2_t temp_data[1024][1024];
+    real_t data[512][512];
+    real2_t temp_data[512][512];
 } Speckle_Image;
 //typedef struct Speckle_Image {
 //    int num_x;
@@ -106,9 +109,9 @@ __kernel void Speckle(__global struct Speckle_Image *speckle_image,
 //    real2_t TEMP[64][64];
     int m;
     int n;
-    for (m = 0; m < 1024; m++)
+    for (m = 0; m < 512; m++)
     {
-        for ( n = 0; n < 1024; n++)
+        for ( n = 0; n < 512; n++)
         {
             speckle_image->temp_data[m][n] = (real2_t)(0,0);
         }
@@ -150,8 +153,8 @@ __kernel void Speckle(__global struct Speckle_Image *speckle_image,
     int j = get_global_id(1);
 
 
-    //for (int n = 0; n < photons->num_exit_photons; n++)
-    for (int n = 0; n < 25000; n++)
+    for (int n = 0; n < photons->num_exit_photons; n++)
+    //for (int n = 0; n < 320000; n++)
     {
 
 

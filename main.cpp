@@ -6,12 +6,12 @@
 #include <string>
 #include <iostream>
 #include <cstdlib>
-#include <sys/stat.h>
-#include <boost/filesystem.hpp>
-using namespace boost::filesystem;
+//#include <sys/stat.h>
+//#include <boost/filesystem.hpp>
+//using namespace boost::filesystem;
 #include <algorithm>
 #include <ctime>
-
+#include <sstream>      // std::stringstream
 using namespace std;
 
 #include "exit_data.h"
@@ -26,7 +26,7 @@ using namespace std;
 #define DEBUG
 #undef DEBUG
 
-const std::string separator = "---------------------------------------------------\n";
+
 
 
 //#if defined (cl_khr_fp64)
@@ -48,6 +48,7 @@ const std::string separator = "-------------------------------------------------
 // due to timeout of watchdog timer.
 
 #define NUM_PHOTONS 25000
+//#define NUM_PHOTONS 320000
 
 
 
@@ -86,15 +87,14 @@ typedef struct Exit_Photons {
 
 // Define the attributes of the CCD camera as well as its location.
 //
-#define X_PIXELS 1024
-#define Y_PIXELS 1024
+#define X_PIXELS 512
+#define Y_PIXELS 512
 typedef struct CCD {
     real_t x_center, y_center, z;  // location of the CCD in 3-D space.
     real_t dx; // pixel size (x-axis)
     real_t dy; // pixel size (y-axis)
     int total_x_pixels, total_y_pixels;     // number of pixels in the x and y-axis.
     int total_pix;
-
 } CCD;
 
 
@@ -111,21 +111,6 @@ typedef struct Speckle_Image {
 /// ------------------------------------------------
 const char* oclErrorString(cl_int error);
 
-
-/// Responsible for loading data from files in an informative and structured way.
-/// -----------------------------------------------------------------------------
-/// Holds the filename and timestamp of the file.
-/// Used for sorting and loading data.
-struct filename_tstamp
-{
-    std::string filename;
-    size_t tstamp;
-};
-bool SortFunction (struct filename_tstamp a, struct filename_tstamp b) { return (a.tstamp < b.tstamp); }
-void printFiles(std::vector<filename_tstamp> files);
-int  Get_num_detected_photons(std::string &filename);
-void Load_detected_photons_from_file(void);
-std::vector<ExitData * > exit_data_all_timesteps;
 
 
 
@@ -144,7 +129,7 @@ int main()
         std::cout<<" No platforms found. Check OpenCL installation!\n";
         exit(1);
     }
-    cl::Platform default_platform=all_platforms[0];
+    cl::Platform default_platform = all_platforms[0];
     std::cout << "Using platform: "<<default_platform.getInfo<CL_PLATFORM_NAME>()<<"\n";
 
     //get default device of the default platform
@@ -229,9 +214,7 @@ int main()
     }
 
 
-    /// Read in the data from the AO simulation.
-    /// ------------------------------------------------------------------------
-    Load_detected_photons_from_file();
+
 
     /// Create CPU memory.
     /// ------------------------------------------------------------------------
@@ -256,14 +239,52 @@ int main()
         cout << "\n";
 #endif
     }
-    // Create exit photons struct that is handed off to the kernel.
-    //
+
+
+    /// Create exit photons struct that is handed off to the kernel.
+    ///
     Exit_Photons *photons = (Exit_Photons *)malloc(sizeof(Exit_Photons));
     photons->num_exit_photons = NUM_PHOTONS;
     int cnt;
 
+    /// Define the attributes of the CCD.
+    ///
+    CCD *camera = (CCD *)malloc(sizeof(CCD));
+    camera->total_x_pixels = X_PIXELS;
+    camera->total_y_pixels = Y_PIXELS;
+    camera->total_pix = X_PIXELS * Y_PIXELS;
+
+
+    /// Create Device memory.
+    /// ------------------------------------------------------------------------
+    cl::Buffer cl_CCD;             // device memory used for the CCD
+    cl::Buffer cl_photons;         // device memory used for the detected photons
+    cl::Buffer cl_speckle_image;   // device memory used for the speckle formation
+
+    cl_CCD           = cl::Buffer(context, CL_MEM_READ_ONLY, sizeof(CCD), NULL, &err);
+    cl_photons       = cl::Buffer(context, CL_MEM_READ_ONLY, sizeof(Exit_Photons), NULL, &err);
+    cl_speckle_image = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(Speckle_Image), NULL, &err);
+    if (err != CL_SUCCESS)
+    {
+        std::cerr << "ERROR: Could not allocate device memory\n";
+        exit(EXIT_FAILURE);
+    }
+
+
+
+
+    /// Process the detected photon data files for each time step in the AO simulation
+    /// and form the speckle patterns that will be used to create AO signal curve.
+    /// --------------------------------------------------------------------------------------------
+
+    /// Create the exit data object that holds the detected photon data.
+    ///
+    ExitData * detected_photons = new ExitData(NUM_PHOTONS);
+    std::string data_dir_path = "Data/25K_photons";
+    detected_photons->Load_and_sort_filenames(data_dir_path);
+
     /// Holds the values for the exit data during assignment.
-    //
+    ///
     real_t weight            = 0.0f;
     real_t displaced_OPL     = 0.0f;
     real_t refraction_OPL    = 0.0f;
@@ -272,12 +293,14 @@ int main()
     real_t exit_location_y   = 0.0f;
     real_t exit_location_z   = 0.0f;
 
-
     cout << "\nLoading " << NUM_PHOTONS << " detected photons for speckle pattern formation\n";
     /// For each time step of recorded data from the AO sim
-    //for (size_t time_step = 0; time_step < exit_data_all_timesteps.size(); time_step++)
-    for (size_t time_step = 0; time_step < 1; time_step++)
+    for (size_t time_step = 0; time_step < detected_photons->Get_num_files(); time_step++)
+    //for (size_t time_step = 0; time_step < 1; time_step++)
     {
+        /// Load in the data for this time step.
+        detected_photons->loadExitData(time_step);
+
         /// Loop through the exit data and assign 'NUM_PHOTONS' of detected photons
         /// the struct that will be handed off to the OpenCL kernel.
         for (cnt = 0; cnt < NUM_PHOTONS; cnt++)
@@ -285,12 +308,12 @@ int main()
 
             // Transfer data from the 'ExitData' object to the structs that OpenCL uses.
             //
-            weight 				= exit_data_all_timesteps.at(time_step)->values[cnt][0];
-            displaced_OPL 		= exit_data_all_timesteps.at(time_step)->values[cnt][1];
-            refraction_OPL      = exit_data_all_timesteps.at(time_step)->values[cnt][2];
-            combined_OPL		= exit_data_all_timesteps.at(time_step)->values[cnt][3];
-            exit_location_x 	= exit_data_all_timesteps.at(time_step)->values[cnt][4];
-            exit_location_y		= exit_data_all_timesteps.at(time_step)->values[cnt][5];
+            weight 				= detected_photons->values[cnt][0];
+            displaced_OPL 		= detected_photons->values[cnt][1];
+            refraction_OPL      = detected_photons->values[cnt][2];
+            combined_OPL		= detected_photons->values[cnt][3];
+            exit_location_x 	= detected_photons->values[cnt][4];
+            exit_location_y		= detected_photons->values[cnt][5];
             //exit_location_z		= exit_data_all_timesteps.at(time_step)->values[cnt][6];
 
 
@@ -303,130 +326,109 @@ int main()
             photons->p[cnt].weight = weight;
             photons->p[cnt].wavelength = 532e-9f;
         }
-    }
-
-
-    // Define the attributes of the CCD.
-    //
-    CCD *camera = (CCD *)malloc(sizeof(CCD));
-    //camera->dx = PIXEL_SIZE;
-    //camera->dy = PIXEL_SIZE;
-    camera->total_x_pixels = X_PIXELS;
-    camera->total_y_pixels = Y_PIXELS;
-    camera->total_pix = X_PIXELS * Y_PIXELS;
-//    camera->x_center = X_CENTER;
-//    camera->y_center = Y_CENTER;
-//    camera->z = DISTANCE_FROM_MEDIUM;
 
 
 
-
-    /// Create Device memory.
-    /// ------------------------------------------------------------------------
-    cl::Buffer cl_CCD;             // device memory used for the CCD
-    cl::Buffer cl_photons;         // device memory used for the detected photons
-    cl::Buffer cl_speckle_image;   // device memory used for the speckle formation
-
-
-
-    cl_CCD           = cl::Buffer(context, CL_MEM_READ_ONLY, sizeof(CCD), NULL, &err);
-    cl_photons       = cl::Buffer(context, CL_MEM_READ_ONLY, sizeof(Exit_Photons), NULL, &err);
-    cl_speckle_image = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(Speckle_Image), NULL, &err);
-    if (err != CL_SUCCESS)
-    {
-        std::cerr << "ERROR: Could not allocate device memory\n";
-        exit(EXIT_FAILURE);
-    }
-
-    /// Push data to device.
-    /// ------------------------------------------------------------------------
-    cout << "\nPushing data to GPU...\n";
-    cl::Event event;
-    cl::CommandQueue queue;
-    try {
-        queue = cl::CommandQueue(context, default_device, 0, &err);
-    }
-    catch (cl::Error er)
-    {
-        std::cerr << "ERROR: " << er.what() << er.err() << "\n";
-    }
-
-    err = queue.enqueueWriteBuffer(cl_speckle_image, CL_TRUE, 0, sizeof(Speckle_Image),
-                                   (void *)speckle_image, 0, &event);
-    err |= queue.enqueueWriteBuffer(cl_photons, CL_TRUE, 0, sizeof(Exit_Photons),
-                                   (void *)photons, 0, &event);
-    err |= queue.enqueueWriteBuffer(cl_CCD, CL_TRUE, 0, sizeof(CCD),
-                                   (void *)camera, 0, &event);
-
-
-    if (err != CL_SUCCESS)
-    {
-        std::cerr << "ERROR: Failed to enqueue data\n";
-        exit(-1);
-    }
-
-    err =  kernel.setArg(0, cl_speckle_image);
-    err |= kernel.setArg(1, cl_photons);
-    err |= kernel.setArg(2, cl_CCD);
-    if (err != CL_SUCCESS)
-    {
-        std::cerr << "ERROR: Failed to set kernel arguments\n";
-        exit(EXIT_FAILURE);
-    }
-
-
-    /// Wait for the command queue to finish these commands before proceeding.
-    /// ------------------------------------------------------------------------
-    queue.finish();
-
-
-    /// Run the kernel on the device.
-    /// ------------------------------------------------------------------------
-    cout << "Executing kernel...\n";
-    err = queue.enqueueNDRangeKernel(kernel, cl::NDRange(), cl::NDRange(1024,1024), cl::NDRange(16,16), NULL, &event);
-    queue.finish();
-
-
-    /// Read result from device to host.
-    /// ------------------------------------------------------------------------
-    err = queue.enqueueReadBuffer(cl_speckle_image, CL_TRUE, 0, sizeof(Speckle_Image),
-                                   (void *)speckle_image, 0, &event);
-    queue.finish();
-    event.wait();
-
-
-    /// Write data out to file for imaging.
-    /// ------------------------------------------------------------------------
-    std::ofstream speckle_data_stream;
-    std::string output_filename = "Testing-Speckles/speckle_gpu.dat";
-    speckle_data_stream.open(output_filename.c_str());
-    if (!speckle_data_stream)
-    {
-        cout << "!!! ERROR: Output file ('" << output_filename << "') could not be opened !!!\n";
-        exit(EXIT_FAILURE);
-    }
-    // Set the precision and width of the data written to file.
-    //speckle_data_stream.width(10);
-    //speckle_data_stream.setf(std::ios::showpoint | std::ios::fixed);
-    speckle_data_stream.precision(6);
-
-    cout << "\n\nData after kernel execution\n\n";
-    for (size_t i = 0; i < X_PIXELS; i++)
-    {
-        for (size_t j = 0; j < Y_PIXELS; j++)
-        {
-            speckle_data_stream << speckle_image->data[i][j] << "\t";
-#ifdef DEBUG
-            cout << speckle_image->data[i][j] << ", ";
-#endif
+        /// Push data to device.
+        /// ------------------------------------------------------------------------
+        cout << "\nPushing data to GPU...\n";
+        cl::Event event;
+        cl::CommandQueue queue;
+        try {
+            queue = cl::CommandQueue(context, default_device, 0, &err);
         }
-        speckle_data_stream << "\n";
+        catch (cl::Error er)
+        {
+            std::cerr << "ERROR: " << er.what() << er.err() << "\n";
+        }
+
+        err = queue.enqueueWriteBuffer(cl_speckle_image, CL_TRUE, 0, sizeof(Speckle_Image),
+                                       (void *)speckle_image, 0, &event);
+        err |= queue.enqueueWriteBuffer(cl_photons, CL_TRUE, 0, sizeof(Exit_Photons),
+                                       (void *)photons, 0, &event);
+        err |= queue.enqueueWriteBuffer(cl_CCD, CL_TRUE, 0, sizeof(CCD),
+                                       (void *)camera, 0, &event);
+
+
+        if (err != CL_SUCCESS)
+        {
+            std::cerr << "ERROR: Failed to enqueue data\n";
+            exit(-1);
+        }
+
+        err =  kernel.setArg(0, cl_speckle_image);
+        err |= kernel.setArg(1, cl_photons);
+        err |= kernel.setArg(2, cl_CCD);
+        if (err != CL_SUCCESS)
+        {
+            std::cerr << "ERROR: Failed to set kernel arguments\n";
+            exit(EXIT_FAILURE);
+        }
+
+
+        /// Wait for the command queue to finish these commands before proceeding.
+        /// ------------------------------------------------------------------------
+        queue.finish();
+
+
+        /// Run the kernel on the device.
+        /// ------------------------------------------------------------------------
+        cout << "Executing kernel...\n";
+        err = queue.enqueueNDRangeKernel(kernel, cl::NDRange(), cl::NDRange(X_PIXELS,Y_PIXELS), cl::NDRange(16,16), NULL, &event);
+        queue.finish();
+
+
+        /// Read result from device to host.
+        /// ------------------------------------------------------------------------
+        err = queue.enqueueReadBuffer(cl_speckle_image, CL_TRUE, 0, sizeof(Speckle_Image),
+                                       (void *)speckle_image, 0, &event);
+        queue.finish();
+        event.wait();
+
+
+        /// Write speckle data out to file for calculation and/or imaging.
+        /// ------------------------------------------------------------------------
+        std::ofstream speckle_data_stream;
+        std::stringstream output_filename;
+        output_filename << "Testing-Speckles/speckle_t" << time_step << ".dat";
+        ///std::string output_filename = "Testing-Speckles/speckle_gpu.dat";
+        speckle_data_stream.open(output_filename.str().c_str());
+        if (!speckle_data_stream)
+        {
+            cout << "!!! ERROR: Output file ('" << output_filename << "') could not be opened !!!\n";
+            exit(EXIT_FAILURE);
+        }
+        // Set the precision and width of the data written to file.
+        //speckle_data_stream.width(10);
+        //speckle_data_stream.setf(std::ios::showpoint | std::ios::fixed);
+        speckle_data_stream.precision(6);
+
+   #ifdef DEBUG
+        cout << "\n\nData after kernel execution\n\n";
+   #endif
+        for (size_t i = 0; i < X_PIXELS; i++)
+        {
+            for (size_t j = 0; j < Y_PIXELS; j++)
+            {
+                speckle_data_stream << speckle_image->data[i][j] << "\t";
+    #ifdef DEBUG
+                cout << speckle_image->data[i][j] << ", ";
+    #endif
+            }
+            speckle_data_stream << "\n";
+            speckle_data_stream.flush();
+    #ifdef DEBUG
+            cout << "\n";
+    #endif
+        }
         speckle_data_stream.flush();
-#ifdef DEBUG
-        cout << "\n";
-#endif
-    }
-    speckle_data_stream.flush();
+
+
+
+    } /// End for loop (num_files)
+
+
+
 
 
 
@@ -435,108 +437,7 @@ int main()
 }
 
 
-/// Responsible for loading in data (detected photons) from the AO simulation results.
-///
-void Load_detected_photons_from_file(void)
-{
-    path p_exit_data = "Data";
-    path p_speckle_data = "Testing-Speckles";
-    if (is_directory(p_exit_data))
-    {
-        cout << "\nData directory found: " << p_exit_data << '\n';
 
-        /// Check if we have a directory to store the generated speckle data.
-        if (is_directory(p_speckle_data))
-        {
-            cout << "Storing speckle data: " << p_speckle_data << '\n';
-        }
-        else
-        {
-            cout << "!!!ERROR: Directory for storing speckle data to location [" << p_speckle_data << "] does not exist.\n";
-            exit(1);
-        }
-
-    }
-    else
-    {
-        cout << "!!!ERROR: Data directory does not exist.  Given the following path: " << p_exit_data << '\n';
-        exit(1);
-    }
-
-    /// Get the timestamps of all the files and add them to the vector for sorting later.
-    struct stat st;
-    std::vector<filename_tstamp> files;
-    for (directory_iterator itr(p_exit_data); itr!=directory_iterator(); ++itr)
-    {
-        std::string f = itr->path().string(); // + itr->path().filename().string();
-        if (stat(f.c_str(), &st) != 0)
-        {
-            cout << "!!!ERROR: Unable to read time stamp of " << f << '\n';
-            cout << "st.st_mtime = " << st.st_mtime << '\n';
-            exit(1);
-        }
-
-        /// Ignore the seeds file used for generating exit photons (i.e. through exit aperture) and directories.
-        if ((itr->path().filename().string() != "seeds_for_exit.dat") && is_regular_file(itr->path()))
-        {
-            filename_tstamp temp;
-            temp.filename = f;
-            temp.tstamp = st.st_mtime;
-            files.push_back(temp);
-        }
-    }
-
-    /// Sort the files based on their timestamp.
-    //std::sort (files.begin(), files.end(), SortFunction);
-
-    /// The number of exit-data files to read in and operate on.
-    const int NUM_FILES = files.size();
-    int num_detected_photons = Get_num_detected_photons((files.at(0)).filename);
-    cout << separator;
-    cout << "Processing " << NUM_FILES << " exit data files.\n";
-    cout << "Detected photons: " << num_detected_photons << '\n';
-    cout << separator;
-
-    /// Create the ExitData object that will hold all of the detected photons and their attributes.
-    /// This object will fill the structs that are handed off to the GPU.
-    //exit_data = new ExitData(num_detected_photons);
-    for (size_t i = 0; i < NUM_FILES; i++)
-    {
-        exit_data_all_timesteps.push_back(new ExitData(Get_num_detected_photons((files.at(i)).filename)));
-        (exit_data_all_timesteps.at(i))->loadExitData(files.at(i).filename);
-    }
-
-
-
-}
-
-int Get_num_detected_photons(std::string &filename)
-{
-
-    int i = 0;
-    std::string line;
-
-
-    // Input stream.
-    std::ifstream temp_stream;
-    temp_stream.open(filename.c_str());
-
-    do
-    {
-
-        getline(temp_stream,line);
-        if (temp_stream.fail())
-        {
-            break;
-        }
-        ++i;
-    }
-    while (temp_stream.good());
-
-    temp_stream.close();
-
-    return i;
-}
 
 // Helper function to get error string
 // *********************************************************************
