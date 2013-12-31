@@ -1,36 +1,32 @@
 
-#define CONFIG_USE_DOUBLE 1
 
-//#if CONFIG_USE_DOUBLE
-//#if defined(cl_khr_fp64)  // Khronos extension available?
-//#pragma OPENCL EXTENSION cl_khr_fp64 : enable
-//#define DOUBLE_SUPPORT_AVAILABLE
-//#elif defined(cl_amd_fp64)  // AMD extension available?
-#pragma OPENCL EXTENSION cl_amd_fp64 : enable
-//#define DOUBLE_SUPPORT_AVAILABLE
-//#endif
 
-//#endif // CONFIG_USE_DOUBLE
+#define DOUBLE_PRECISION_AVAILABLE
 
-#if defined(DOUBLE_SUPPORT_AVAILABLE)
-// double
+#if defined(DOUBLE_PRECISION_AVAILABLE)
+#if defined (cl_khr_fp64)
+    #pragma OPENCL EXTENSION cl_khr_fp64 : enable
 typedef double real_t;
 typedef double2 real2_t;
-typedef double3 real3_t;
-typedef double4 real4_t;
-typedef double8 real8_t;
-typedef double16 real16_t;
+#define PI 3.14159265358979323846
+#elif defined(cl_amd_fp64)
+    #pragma OPENCL EXTENSION cl_amd_fp64 : enable
+typedef double real_t;
+typedef double2 real2_t;
 #define PI 3.14159265358979323846
 #else
-// float
 typedef float real_t;
 typedef float2 real2_t;
-typedef float3 real3_t;
-typedef float4 real4_t;
-typedef float8 real8_t;
-typedef float16 real16_t;
 #define PI 3.14159265359f
 #endif
+
+#else
+typedef float real_t;
+typedef float2 real2_t;
+#define PI 3.14159265359f
+#endif // define(DOUBLE_PRECISION_AVAILABLE)
+
+
 
 
 /// Wavelength for the interference pattern calculation.
@@ -50,12 +46,6 @@ typedef struct Photon {
     real_t wavelength;              // The 'wavelength' of the photon.
 } Photon;
 
-typedef struct Exit_Photons {
-    int num_exit_photons;
-    //Photon p[320000];
-    Photon p[25000];
-} Exit_Photons;
-
 
 // Define the attributes of the CCD camera as well as its location.
 //
@@ -63,6 +53,7 @@ typedef struct Exit_Photons {
 #define X_CENTER 0.02250f
 #define Y_CENTER 0.01145f
 #define DISTANCE_FROM_MEDIUM 0.45f
+
 typedef struct CCD {
     real_t x_center, y_center, z;  // location of the CCD in 3-D space.
     real_t dx; // pixel size (x-axis)
@@ -76,37 +67,33 @@ typedef struct CCD {
 
 
 typedef struct Speckle_Image {
+    int num_detected_photons;
     int num_x;
     int num_y;
     real_t data[512][512];
     real2_t temp_data[512][512];
 } Speckle_Image;
-//typedef struct Speckle_Image {
-//    int num_x;
-//    int num_y;
-//    real_t data[64][64];
-//} Speckle_Image;
 
 
 real2_t exp_alpha(real_t alpha);
-// Return cos(alpha) + I*sin(alpha)
+//// Return cos(alpha) + I*sin(alpha)
 real2_t exp_alpha(real_t alpha)
 {
     real_t real_part,imag_part;
-    real_part = native_cos(alpha);
-    imag_part = native_sin(alpha);
-    //cs = cos(alpha);
+    real_part = cos(alpha);
+    imag_part = sin(alpha);
+
     return (real2_t)(real_part, imag_part);
 }
 
 
 __kernel void Speckle(__global struct Speckle_Image *speckle_image,
-                      __global struct Exit_Photons *photons,
+                      __global struct Photon *photons,
                       __global struct CCD *ccd)
 {
 
-    //const int DIMS = 128;
-//    real2_t TEMP[64][64];
+//    //const int DIMS = 128;
+////    real2_t TEMP[64][64];
     int m;
     int n;
     for (m = 0; m < 512; m++)
@@ -153,15 +140,9 @@ __kernel void Speckle(__global struct Speckle_Image *speckle_image,
     int j = get_global_id(1);
 
 
-    for (int n = 0; n < photons->num_exit_photons; n++)
-    //for (int n = 0; n < 320000; n++)
+    for (int n = 0; n < speckle_image->num_detected_photons; n++)
+    //for (int n = 0; n < 2; n++)
     {
-
-
-
-        // Assign the exit weight of this photon.
-        //
-        //weight = photons
 
         // Calculate the x,y location in cartesian space of this pixel.
         //
@@ -172,39 +153,41 @@ __kernel void Speckle(__global struct Speckle_Image *speckle_image,
         // Calculate the distance from the exit aperture of the medium to the pixel
         // on the camera.
         //
-        real_t dist_to_pixel = sqrt((ccd->z*ccd->z) +
-                                    pow((x_pixel - photons->p[n].x), 2) +
-                                    pow((y_pixel - photons->p[n].y), 2));
+        real_t dist_to_pixel = sqrt(pow(ccd->z, 2) +
+                                    pow((x_pixel - photons[n].x), 2) +
+                                    pow((y_pixel - photons[n].y), 2));
 
         // Finish the calculation of the total optical path length to the CCD pixel.
         // NOTE: Because the final propagation to the medium is in air, we assume
         //       a refractive index of 1.0.
-        L = photons->p[n].refraction_OPL + (dist_to_pixel*1.0);
+        //
+        L = photons[n].refraction_OPL + (dist_to_pixel*1.0);
+
 
         // The complex field calculation.
         //
-        real2_t temp = (1/(dist_to_pixel*dist_to_pixel)) * sqrt(photons->p[n].weight) * exp_alpha((real_t)(-1*2*PI*L/WAVELENGTH));
-        real2_t complex = exp_alpha((real_t)(-1*2*PI*L));
+        real2_t temp = (1/(dist_to_pixel*dist_to_pixel)) * sqrt(photons[n].weight) * exp_alpha((real_t)(-1*2*PI*L/WAVELENGTH));
+        //real2_t complex = exp_alpha((real_t)(-1*2*PI*L));
+
 
         // Convert from complex field to intensity.
         //
-        intensity = sqrt((complex.x*complex.x + complex.y*complex.y));
+        //intensity = fabs(pow(sqrt((complex.x*complex.x + complex.y*complex.y)),2));
+        intensity = fabs(pow(sqrt((temp.x*temp.x + temp.y*temp.y)),2));
 
-
+        //barrier(CLK_LOCAL_MEM_FENCE);
         speckle_image->temp_data[i][j] += temp;
+        //speckle_image->data[i][j] += dist_to_pixel;
 
-        // Update the pixel with the addition of the new intensity contribution.
-        //
-//        speckle_image->data[i][0] += complex.x;
-//        speckle_image->data[i][1] += complex.y;
-//        speckle_image->data[i][2+n] = L;
 
     }
 
-    //barrier(CLK_GLOBAL_MEM_FENCE);
+//    //barrier(CLK_GLOBAL_MEM_FENCE);
 
+    //barrier(CLK_GLOBAL_MEM_FENCE);
     real2_t c = speckle_image->temp_data[i][j];
     speckle_image->data[i][j] = fabs(pow(sqrt(c.x*c.x + c.y*c.y),2));
+
 };
 
 
